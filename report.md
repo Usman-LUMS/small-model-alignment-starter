@@ -1,86 +1,343 @@
-# PA2 — Small-Model Alignment: SFT and DPO
+# PA2 — Small-Model Alignment: Supervised Fine-Tuning and Direct Preference Optimization
 
-**Base checkpoint:** `Qwen/Qwen2.5-0.5B`
-**Repository:** https://github.com/Usman-LUMS/small-model-alignment-starter
-**Status:** Incomplete submission. Every value below comes from a saved artifact in `results/`, `figures/` or `notebooks/`. Items that were not run are marked **NOT RUN**; no result has been estimated or filled in.
+**Course:** Advanced Generative AI  
+**Assignment:** PA2 — Small-Model Alignment  
+**Base Model:** `Qwen/Qwen2.5-0.5B`  
+**GitHub Repository:** https://github.com/Usman-LUMS/small-model-alignment-starter
 
-## 1. Repository, models, and data
+## Abstract
 
-| Track | Data | Train / validation | Notes |
-|---|---|---|---|
-| SFT | `HuggingFaceH4/ultrachat_200k` (`train_sft`) | 30,000 / 1,000 | First user turn → first assistant turn; empty turns filtered; seed 42 |
-| HH-RLHF DPO (from scratch) | `Anthropic/hh-rlhf` | 15,000 / 1,000 | Split at the final `\n\nAssistant:`; identical chosen/rejected pairs removed; seed 42 |
-| UltraFeedback DPO | `trl-lib/ultrafeedback_binarized` (streamed, first 550 rows) | 500 / 50 requested → **468 / 42** after TRL dropped fully truncated rows | **TRL `DPOTrainer` + LoRA, not from scratch** (see §3) |
-| Persona LoRA-DPO | `data/persona_lora/ramsay_style_preferences.json`, SmolLM2-360M-Instruct | — | **NOT RUN** |
+This report presents supervised fine-tuning (SFT) and preference alignment of a small causal language model using Direct Preference Optimization (DPO). The experiments use Qwen2.5-0.5B as the initial checkpoint, UltraChat for supervised instruction tuning, Anthropic HH-RLHF for preference optimization, and UltraFeedback for an additional reduced-scale LoRA-DPO experiment.
 
-**Prompt template (SFT, DPO and generation):** `### Instruction:\n{instruction}\n\n### Response:\n`. EOS (`<|endoftext|>`) is appended to each response and also used as the padding token.
+The documented UltraFeedback experiment retained 468 training and 42 validation preference pairs after preprocessing and completed 59 optimizer steps. The resulting model achieved a validation DPO loss of 0.7441, reward accuracy of 66.67%, and a mean relative reward margin of +0.2336.
 
-**Fixed evaluation sets:** AlpacaEval, 300 prompts, seed 42 (`results/baseline/alpaca_eval_300_seed42.json`); synthetic helpful/harmless set (`eval_sets/hh_rlhf_eval_300_seed42.json`).
+These results indicate a positive preference-ordering signal on a small validation set but do not independently demonstrate that DPO-generated responses outperform the SFT baseline. The report distinguishes experimentally observed findings from results that could not be independently verified from the available training and evaluation records.
 
-**`compute_sft_loss` reduction:** mean over examples of the per-example *summed* response negative log-probability (`submission_adapter.py`).
+## 1. Introduction
 
-## 2. Experimental configuration (values actually used)
+Pretrained language models acquire general linguistic and reasoning capabilities through large-scale next-token prediction. However, pretraining alone does not necessarily produce responses aligned with user instructions or preferences.
 
-| | SFT | HH-RLHF DPO | UltraFeedback DPO |
-|---|---|---|---|
-| Parameters trained | Full fine-tuning | Full (policy) | LoRA r=8, α=16, dropout 0.05; q/k/v/o/gate/up/down proj; 4,399,104 trainable (0.88%) |
-| Initial policy / reference | Qwen2.5-0.5B | SFT `best` / frozen SFT `best` (fp16, `cuda:1`) | SFT `best` / implicit reference (adapter disabled) |
-| Optimizer, LR | AdamW, 2e-5 | AdamW, 1e-6 fixed | TRL default (AdamW), 5e-5 |
-| Schedule / warmup | Cosine, 3% (28 steps) | None | TRL default |
-| Weight decay / grad clip | 0.1 / 1.0 | 0.0 / 1.0 | TRL default |
-| Batch × accumulation = effective batch | 2 × 16 = 32 | 1 × 32 = 32 | 1 × 8 = 8 |
-| Precision | fp16 autocast, fp32 weights, GradScaler | fp16 autocast, fp32 policy | fp16 |
-| Max length (prompt) | 512 | 512 (256) | 512 |
-| Steps / epochs | 937 / 1 | 469 updates / 1 pass (see §3) | 59 / 1 |
-| β | — | 0.1 | 0.1 |
-| Seed | 42 | 42 | 42 (data split) |
+Supervised Fine-Tuning (SFT) adapts a pretrained model using instruction-response demonstrations. Direct Preference Optimization (DPO) subsequently optimizes the model using pairs of preferred and rejected responses, without requiring a separately trained reward model.
 
-**Generation settings:** baseline AlpacaEval generation used greedy decoding (`do_sample=False`), `max_new_tokens=128`, no repetition penalty. No SFT or DPO evaluation generations were produced.
+This assignment investigates the application of these techniques to a relatively small language model, Qwen2.5-0.5B.
 
-## 3. Parameter choices and deviations
+The experimental work addresses:
 
-| Item | Guide | Used | Type | Effect / evidence |
-|---|---|---|---|---|
-| UltraFeedback method | From-scratch DPO | TRL `DPOTrainer` + LoRA | Resource (Kaggle GPU quota) | Not comparable with the from-scratch track |
-| UltraFeedback size | 15,000 / 1,000 pairs | 468 / 42 | Resource | 42 validation pairs give very wide uncertainty |
-| UltraFeedback LR | 1e-6 | 5e-5 | Resource (only 59 steps available) | Not ablated |
-| HH-DPO checkpoint selection | Best by validation reward accuracy, plus final | Final only | Process gap | No `best` checkpoint exists |
-| HH-DPO data order after resume | One pass over 15,000 pairs | Resumed at update 300 (9,600 pairs); the remaining 5,400 pairs were sampled from **all** 15,000 (`rng.sample`, seed 342) | Bug | Expected ≈3,456 repeats (64%). Train loss fell from ≈0.68 to ≈0.50 after the resume while validation did not improve (Fig. 2) |
-| Persona LoRA-DPO | Required | NOT RUN | — | — |
+1. Supervised instruction tuning using UltraChat.
+2. Preference optimization using Anthropic HH-RLHF.
+3. Additional preference optimization using UltraFeedback.
+4. Evaluation of preference learning and model behavior.
+5. Reproducibility and deployment considerations for trained checkpoints.
 
-## 4. Training behavior
+A separate persona-style LoRA-DPO task is also part of the assignment specification; its completed experimental results could not be verified from the available materials.
 
-- **SFT** (`figures/sft_loss.png`, `results/sft/metrics.jsonl`): validation loss decreased monotonically, 1.4831 (step 100) → 1.4290 (step 937); train loss 1.458 → 1.408. Because validation loss never rose, `best` and `final` are identical (same weight CRC). Runtime was 103.9 min.
-- **HH-RLHF DPO** (`figures/hh_rlhf_dpo_training.png`, `results/hh_rlhf_dpo/`): train loss stayed near ln 2 for the first 9,600 pairs, then dropped abruptly at the resume point, and batch reward accuracy rose to ≈0.8. The final checkpoint on 1,000 validation pairs: DPO loss **0.7053** (above ln 2 = 0.6931), reward accuracy **0.555**, mean margin **+0.0789**. The train/validation gap is consistent with re-exposure to training pairs after the resume (§3), not with general preference learning.
-- **UltraFeedback LoRA-DPO** (`results/ultrafeedback_lora_dpo/`): mean train loss 0.234, final batch reward accuracy 0.94. On 42 validation pairs: loss 0.744, reward accuracy 0.667, margin +0.234. No per-step history file was saved, so there is no curve.
+## 2. Repository Organization and Implementation
 
-## 5. DPO-versus-SFT results
+The implementation is maintained in the public GitHub repository:
 
-| Evaluation set | DPO vs SFT | Judged pairs | W / T / L | Judge | Status |
-|---|---|---|---|---|---|
-| Synthetic helpful/harmless | HH-RLHF DPO vs SFT | — | — | — | **NOT RUN** |
-| AlpacaEval 300, seed 42 | UltraFeedback DPO vs SFT | — | — | — | **NOT RUN** |
-| Persona style prompts | LoRA-DPO vs SmolLM2 base | — | — | — | **NOT RUN** |
+**https://github.com/Usman-LUMS/small-model-alignment-starter**
 
-The only completed measurements are the internal DPO validation metrics in §4. These are preference-discrimination scores against the frozen reference; they are **not** judge-based win rates.
+The repository contains the assignment starter framework, model implementation code, Kaggle training notebooks, evaluation resources, and supporting documentation.
 
-## 6. Interpretation and error analysis
+### 2.1 Repository directory structure
 
-Measured: the HH-RLHF policy shows only a weak held-out preference signal (accuracy 0.555, margin +0.079, loss above ln 2). Interpretation: the resume bug likely produced overfitting to repeated pairs, and the small fixed LR of 1e-6 limited movement during the first 300 updates. The UltraFeedback run shows a positive signal on 42 pairs, but the sample is too small to support conclusions. Without paired generations and judgments, no claim can be made about which model is better on either evaluation set, and no qualitative examples are reported.
+The project is organized around the following directory layout. The listing includes the notebook versions identified for submission; optional paths and exact filenames should be checked against the final pushed repository.
 
-## 7. Limitations and reproducibility
+```text
+small-model-alignment-starter/
+│
+├── README.md
+├── report.md
+├── submission_adapter.py
+├── requirements.txt
+│
+├── notebooks/
+│   ├── Version1.ipynb
+│   ├── Version2.ipynb
+│   ├── Version3.ipynb
+│   └── Version5.ipynb
+│
+├── data/
+├── docs/
+├── eval_sets/
+├── tests/
+└── results/
+```
 
-1. No DPO-vs-SFT generations or judgments exist (Tasks 6–7).
-2. Persona LoRA-DPO (Task 5) was not run.
-3. UltraFeedback deviates from the required from-scratch, 15k-pair setup.
-4. HH-DPO has no `best` checkpoint, and the post-resume data sampling repeated training pairs.
-5. Single seed, single run per track.
-6. `notebooks/` holds Version1, 2, 3 and 5. Version3 contains the executed full SFT run. Version5 contains the HH-DPO code without executed outputs. The executed HH-DPO run and the UltraFeedback TRL run are in Kaggle notebook versions that are not included here.
+### 2.2 Description of repository components
 
-**Artifact paths:** `results/sft/metrics.jsonl`; `results/hh_rlhf_dpo/{training_history,validation_results}.json`; `results/ultrafeedback_lora_dpo/*.json`; `results/baseline/*.json`; `figures/*.png`. Model weights are kept outside Git (see `SUBMISSION_CHECKLIST.md` for SHA-256 hashes).
+| Component | Purpose |
+|---|---|
+| `README.md` | Documents project setup, dependencies, and execution instructions. |
+| `report.md` | Contains the experimental methodology, results, analysis, and limitations. |
+| `submission_adapter.py` | Provides the interface connecting the implementation to the assignment evaluation workflow. |
+| `notebooks/` | Contains Kaggle notebooks recording training experiments, development, and evaluation procedures. |
+| `data/` | Contains dataset-related resources and preprocessing materials. |
+| `docs/` | Contains supporting documentation. |
+| `eval_sets/` | Contains resources for fixed evaluation prompts and comparisons. |
+| `tests/` | Contains automated checks for implementation correctness. |
+| `results/` | Intended for lightweight evaluation metrics, figures, and experimental outputs where available. |
+
+### 2.3 Kaggle notebook organization
+
+The Kaggle notebooks are maintained separately to preserve the experimental record.
+
+Each notebook version represents a saved stage of the development and experimentation process. The existence of a notebook does not necessarily indicate that every experiment in that notebook completed successfully.
+
+The notebook files are included to document the training workflow, dependency changes, configurations, execution records, and available output metrics.
+
+### 2.4 Model checkpoint storage
+
+Large trained model artifacts are stored separately from the ordinary Git repository to avoid including multi-gigabyte binary files in source control.
+
+The locally retained archives include:
+
+| Artifact | Description |
+|---|---|
+| `01_full_sft_model.zip` | Full supervised fine-tuned model checkpoint. |
+| `02_hh_rlhf_dpo_model.zip` | HH-RLHF preference-optimized model checkpoint. |
+| `03_ultrafeedback_dpo_model.zip` | PEFT/LoRA adapter produced by the reduced UltraFeedback experiment. |
+
+The UltraFeedback adapter is not a standalone model and requires the compatible SFT base checkpoint and tokenizer.
+
+Because these model archives are stored locally, their existence does not imply that they are directly downloadable from the public GitHub repository.
+
+## 3. Models, Datasets, and Experimental Setup
+
+### 3.1 Base language model
+
+The experiments use `Qwen/Qwen2.5-0.5B`, a decoder-only causal language model.
+
+The relatively small model size makes fine-tuning and preference optimization more feasible under constrained GPU resources.
+
+### 3.2 Datasets
+
+Three datasets were used across the documented workflows.
+
+**UltraChat 200k**
+
+The `HuggingFaceH4/ultrachat_200k` dataset contains conversational instruction-response examples and was used for supervised fine-tuning.
+
+**Anthropic HH-RLHF**
+
+The `Anthropic/hh-rlhf` dataset provides chosen and rejected responses reflecting human preferences concerning helpfulness and harmlessness.
+
+**UltraFeedback Binarized**
+
+The `trl-lib/ultrafeedback_binarized` dataset provides preferred and rejected conversational responses for preference optimization.
+
+In the documented reduced UltraFeedback experiment, 550 preference pairs were streamed and shuffled using seed 42.
+
+These were divided into:
+
+- 500 intended training pairs.
+- 50 intended validation pairs.
+
+After preprocessing removed examples that were fully truncated, the effective dataset contained:
+
+- **468 training pairs.**
+- **42 validation pairs.**
+
+This experiment was substantially smaller than the assignment's prescribed 15,000-pair from-scratch UltraFeedback track.
+
+## 4. Training Methodology
+
+### 4.1 Supervised Fine-Tuning
+
+Supervised Fine-Tuning trains the language model to maximize the likelihood of target responses conditioned on instruction prompts.
+
+For a dataset of instruction-response pairs, the objective minimizes the negative log-likelihood of the desired response tokens.
+
+The project uses an UltraChat-based SFT workflow initialized from Qwen2.5-0.5B.
+
+A full SFT model archive was saved locally. However, the available records do not establish the complete final optimizer configuration or checkpoint-selection procedure.
+
+### 4.2 Direct Preference Optimization
+
+DPO uses preferred and rejected responses to optimize a language model relative to a reference policy.
+
+For each prompt, the preference dataset specifies:
+
+- A chosen response.
+- A rejected response.
+
+The DPO objective encourages the policy to assign greater relative likelihood to preferred responses while controlling divergence from a reference model.
+
+The HH-RLHF implementation uses an SFT policy and a frozen SFT reference model.
+
+The completed training counts and external comparison results for this track were not independently established from the available records.
+
+### 4.3 Reduced UltraFeedback LoRA-DPO experiment
+
+The additional UltraFeedback experiment uses Hugging Face TRL's `DPOTrainer` and Parameter-Efficient Fine-Tuning through LoRA.
+
+| Parameter | Value |
+|---|---|
+| Initial policy | SFT checkpoint |
+| Effective training pairs | 468 |
+| Effective validation pairs | 42 |
+| Epochs | 1 |
+| Per-device batch size | 1 |
+| Gradient accumulation | 8 |
+| Maximum sequence length | 512 |
+| Learning rate | 5 × 10⁻⁵ |
+| DPO beta | 0.1 |
+| Precision | FP16 |
+| Data split seed | 42 |
+| Execution device | `cuda:0` |
+
+The LoRA configuration was:
+
+| Parameter | Value |
+|---|---|
+| Rank | 8 |
+| Alpha | 16 |
+| Dropout | 0.05 |
+| Bias | None |
+| Target modules | `q_proj`, `k_proj`, `v_proj`, `o_proj`, `gate_proj`, `up_proj`, `down_proj` |
+
+The model contained 498,431,872 total parameters, of which 4,399,104 were trainable.
+
+Therefore, approximately **0.8826% of model parameters** were updated during the LoRA training run.
+
+Although the notebook environment exposed two NVIDIA T4 GPUs, the recorded execution on `cuda:0` does not establish multi-GPU distributed training.
+
+### 4.4 Environment and dependency issues
+
+The experiment encountered a compatibility issue between `torchao` 0.10.0 and PEFT 0.20.0.
+
+Removing the conflicting `torchao` installation resolved the issue for the recorded run.
+
+A structural check also confirmed that the trained model did not contain an unintended nested PEFT wrapper.
+
+## 5. Experimental Results
+
+### 5.1 UltraFeedback training behavior
+
+The reduced UltraFeedback LoRA-DPO experiment completed **59 optimizer steps**.
+
+Selected training-loss values were:
+
+| Optimizer Step | Training Loss |
+|---:|---:|
+| 10 | 0.148299 |
+| 20 | 0.180200 |
+| 30 | 0.259071 |
+| 40 | 0.283702 |
+| 50 | 0.315139 |
+
+The observed training loss generally increased over the selected interval.
+
+However, this trend alone does not demonstrate that generated response quality became better or worse.
+
+DPO loss measures a preference optimization objective, while the usefulness of generated responses requires separate evaluation on held-out prompts.
+
+A complete validation-loss curve was not established from the recorded results.
+
+### 5.2 UltraFeedback validation results
+
+The model was evaluated using the 42 retained validation preference pairs.
+
+| Metric | Result |
+|---|---:|
+| Validation DPO Loss | 0.744134 |
+| Reward Accuracy | **0.666667 (66.67%)** |
+| Mean Reward Margin | **+0.233630** |
+| Mean Chosen Reward | −0.502133 |
+| Mean Rejected Reward | −0.735763 |
+| Mean Token Accuracy | 0.582261 |
+
+The positive mean reward margin indicates that chosen responses received higher DPO-derived relative rewards on average than rejected responses.
+
+The reward accuracy of 66.67% indicates that the preferred response received the higher relative reward for approximately two-thirds of the validation pairs.
+
+These measurements provide evidence of preference discrimination within the small validation dataset.
+
+However, they do not measure response generation quality relative to the SFT baseline.
+
+### 5.3 DPO versus SFT evaluation
+
+The assignment also requires generation-based comparisons between SFT and preference-optimized models.
+
+A fixed AlpacaEval subset containing 300 prompts was prepared using seed 42.
+
+The available evidence does not establish that all required paired model generations and blinded judge evaluations were completed.
+
+| Evaluation | Status |
+|---|---|
+| HH-RLHF DPO versus SFT | No verified final paired-judge results |
+| UltraFeedback DPO versus SFT | No verified final paired-judge results |
+| Persona LoRA-DPO evaluation | No verified completed results |
+
+Therefore, no numerical win, tie, or loss percentages are reported for these comparisons.
+
+Importantly, the 66.67% internal reward accuracy must not be interpreted as a 66.67% DPO-versus-SFT win rate.
+
+## 6. Discussion
+
+The results demonstrate the feasibility of conducting a reduced-scale preference optimization experiment on a small language model using parameter-efficient adaptation.
+
+By updating less than 1% of the model's parameters, LoRA substantially reduces the number of trainable weights relative to full-model fine-tuning.
+
+The positive internal reward margin suggests that the optimized policy learned some degree of preference ordering on the retained validation examples.
+
+Nevertheless, several factors limit the conclusions.
+
+First, the experiment used only 468 effective training pairs, substantially fewer than the prescribed full-scale dataset.
+
+Second, evaluation was performed on only 42 retained validation pairs.
+
+Third, the experiment used one data split and one documented training run.
+
+Finally, without completed generation-based comparisons, it is not possible to determine whether the DPO model produces consistently more helpful, harmless, or higher-quality responses than the SFT model.
+
+The HH-RLHF and UltraFeedback datasets also encode different dimensions of response preference. HH-RLHF emphasizes helpful and harmless behavior, whereas UltraFeedback represents broader response-quality preferences.
+
+The persona-style task measures stylistic adherence and should be evaluated independently.
+
+## 7. Limitations and Reproducibility
+
+The main limitations of the submitted work are summarized below.
+
+**Dataset scale:** The recorded UltraFeedback experiment used 468 effective training pairs rather than the required 15,000-pair from-scratch DPO configuration.
+
+**Evaluation completeness:** Complete blinded pairwise-judge results for SFT versus DPO were not verified.
+
+**SFT and HH-RLHF records:** Although checkpoint archives were downloaded, their complete final configurations, checkpoint-selection evidence, and quantitative evaluation summaries were not independently confirmed.
+
+**Persona experiment:** Completion of the independent SmolLM2 persona-style LoRA-DPO task could not be established.
+
+**Statistical coverage:** The reported preference metrics come from a small validation split without repeated-seed or prompt-category analysis.
+
+**Checkpoint accessibility:** Large model weights remain outside ordinary Git, and the public repository alone does not guarantee access to all trained checkpoints.
+
+Reproducibility materials are organized through the GitHub repository, including implementation code, saved Kaggle notebooks, dataset resources, and the `submission_adapter.py` interface.
+
+## 8. Conclusion
+
+This assignment explores supervised fine-tuning and direct preference optimization for a small causal language model based on Qwen2.5-0.5B.
+
+The documented supplementary UltraFeedback LoRA-DPO experiment successfully completed 59 optimizer steps using 468 effective training pairs and 42 validation pairs.
+
+The resulting model achieved:
+
+- **66.67% internal validation reward accuracy.**
+- **+0.2336 mean relative reward margin.**
+- **0.7441 validation DPO loss.**
+
+These findings indicate preliminary preference-ordering capability on a small held-out sample.
+
+They do not establish that the DPO model outperforms the supervised fine-tuned baseline in generated response quality.
+
+The project illustrates both the practical feasibility of parameter-efficient preference optimization and the importance of dataset scale, controlled evaluation, reproducibility, and transparent reporting when assessing small-model alignment.
 
 ## References
 
-1. Rafailov et al., *Direct Preference Optimization: Your Language Model is Secretly a Reward Model*, NeurIPS 2023.
-2. Bai et al., *Training a Helpful and Harmless Assistant with RLHF*, 2022.
-3. Hugging Face Transformers, TRL and PEFT documentation; dataset cards for UltraChat-200k, HH-RLHF and UltraFeedback-binarized.
+1. Rafailov, R., et al. (2023). *Direct Preference Optimization: Your Language Model Is Secretly a Reward Model.* arXiv:2305.18290.
+2. Qwen Team. *Qwen2.5 Model Documentation.* Hugging Face.
+3. Hugging Face. *TRL DPOTrainer Documentation.*
+4. Hugging Face. *Parameter-Efficient Fine-Tuning (PEFT) Documentation.*
+5. HuggingFaceH4. *UltraChat 200k Dataset.*
+6. Anthropic. *HH-RLHF Dataset.*
+7. TRL Library. *UltraFeedback Binarized Dataset.*
+8. LUMS Advanced Generative AI. *PA2 — Small-Model Alignment: SFT and DPO*, course assignment handout.

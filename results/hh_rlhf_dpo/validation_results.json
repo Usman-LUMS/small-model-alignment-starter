@@ -1,0 +1,6 @@
+{
+  "validation_pairs": 1000,
+  "mean_dpo_loss": 0.7052669335370884,
+  "preference_accuracy": 0.555,
+  "mean_reward_margin": 0.07886524134874344
+}

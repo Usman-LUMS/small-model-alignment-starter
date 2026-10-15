@@ -1,0 +1,19 @@
+{
+  "train_runtime": 237.1566,
+  "train_samples_per_second": 1.973,
+  "train_steps_per_second": 0.249,
+  "total_flos": 773627737213440.0,
+  "train_loss": 0.23399157241239385,
+  "entropy": 1.47052421902909,
+  "num_tokens": 947607.0,
+  "logits/chosen": -1.849754229943534,
+  "logits/rejected": -1.7048372834914716,
+  "mean_token_accuracy": 0.628420276896042,
+  "rewards/chosen": 0.424354718915899,
+  "rewards/rejected": -1.7970441622276079,
+  "rewards/accuracies": 0.9411764705882353,
+  "rewards/margins": 2.221398892976782,
+  "logps/chosen": -296.5223811373991,
+  "logps/rejected": -337.379447965061,
+  "epoch": 1.0
+}

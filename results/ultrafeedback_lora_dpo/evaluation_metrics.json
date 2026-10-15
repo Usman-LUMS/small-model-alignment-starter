@@ -1,0 +1,14 @@
+{
+  "eval_loss": 0.7441336512565613,
+  "eval_entropy": 1.3725727633351372,
+  "eval_num_tokens": 947607.0,
+  "eval_logits/chosen": -1.803792243521539,
+  "eval_logits/rejected": -1.9076186531174404,
+  "eval_mean_token_accuracy": 0.5822608591545195,
+  "eval_rewards/chosen": -0.5021326439177972,
+  "eval_rewards/rejected": -0.7357625895667643,
+  "eval_rewards/accuracies": 0.6666666666666666,
+  "eval_rewards/margins": 0.2336299405211494,
+  "eval_logps/chosen": -325.28896445319765,
+  "eval_logps/rejected": -246.0740923200335
+}

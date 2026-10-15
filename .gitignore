@@ -1,2 +1,56 @@
 __pycache__/
 *.py[cod]
+
+# Local environment and build artifacts
+.venv/
+venv/
+env/
+*.egg-info/
+build/
+dist/
+
+# Caches
+.pytest_cache/
+.ipynb_checkpoints/
+.mypy_cache/
+.ruff_cache/
+.cache/
+wandb/
+mlruns/
+
+# Temporary and OS/editor files
+*.tmp
+*.temp
+*.swp
+*~
+*.log
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# Secrets
+.env
+.env.*
+kaggle.json
+*.pem
+*.key
+secrets*.json
+credentials*.json
+
+# Model weights and archives (kept outside Git; see SUBMISSION_CHECKLIST.md)
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.gguf
+*.onnx
+*.h5
+*.zip
+*.tar
+*.tar.gz
+*.7z
+outputs/
+checkpoints/
